@@ -294,8 +294,8 @@ def openCustomGui():
             self.op2 = op2
             self.period = period
             
-        def operate(self, params):
-            result = self.op1(params)
+        def operate(self, *args):
+            result = self.op1(*args)
             self.count += 1 # count the operations
             if self.count >= self.period: # every so often
                 self.count -= self.period
@@ -313,20 +313,76 @@ def openCustomGui():
 
     pc = PeriodicCaller(distFromTarget, arm.draw, 20)
 
+    class GaussianHolder:
+        def __init__(self, indexLabel, arm):
+            self.index = 0
+            self.count = 3
+            self.means = []
+            self.indexLabel = indexLabel
+            self.arm = arm
+
+        def cycleToNext(self):
+            self.index = (self.index + 1) % self.count
+            self.indexLabel.configure(text="Gaussian " + str(self.index + 1))
+            self.arm.setAngles(self.means[self.index])
+            self.arm.draw()
+
+        def reset(self):
+            self.index = 0
+            self.count = 3
+            self.means = []
+            self.indexLabel.configure(text="No Selection")
+
+    countLabel = tkinter.Label(canvas, text="Gaussian Count")
+    gaussCountEntry = tkinter.Entry(canvas, width=14, justify=tkinter.CENTER)
+    gaussCountEntry.insert(0, "3")
+    gaussIndexLabel = tkinter.Label(canvas, text="No Selection")
+
+    gaussHolder = GaussianHolder(gaussIndexLabel, arm) # holder for the multiple gaussians
+
+    nextGaussButton = tkinter.Button(canvas, text="Next Gaussian", state=tkinter.DISABLED, command=gaussHolder.cycleToNext)
+
+    canvas.create_window(500, 480, window=countLabel)
+    canvas.create_window(500, 500, window=gaussCountEntry)
+    canvas.create_window(600, 520, window=gaussIndexLabel)
+    canvas.create_window(600, 550, window=nextGaussButton)
+
     def doGradient():
+        gaussHolder.reset()
         angles, _ = GradientDescent.fmin(pc.operate, initialAngles, 0.1)
         arm.setAngles(angles)
         arm.draw()
 
     def doPcma():
+        gaussHolder.reset()
+        gaussHolder.indexLabel.configure(text="Gaussian 1")
         angles, _ = pcma.fmin(pc.operate, initialAngles, 0.1)
         arm.setAngles(angles)
         arm.draw()
 
-    def doIcma():
-        angles, _ = gcma.fmin(pc.operate, initialAngles, 0.1)
-        arm.setAngles(angles)
-        arm.draw()
+    def doGcma():
+        nextGaussButton.configure(state=tkinter.DISABLED)
+        gaussIndexLabel.configure(text="Loading...")
+        countString = gaussCountEntry.get()
+
+        try: 
+            gaussHolder.count = int(countString)
+        except:
+            print("Invalid number entered, using 3 components")
+            gaussHolder.count = 3
+        print("Using %s gaussians" %gaussHolder.count)
+        
+        if(gaussHolder.count == 1): #single gaussian
+            doPcma()
+            return
+
+        _, es = gcma.fmin(pc.operate, initialAngles, 0.1, gaussHolder.count)
+        gaussHolder.means = es.mixture.means_
+        gaussHolder.index = -1
+        gaussHolder.cycleToNext()
+        
+        nextGaussButton.configure(state=tkinter.NORMAL)
+
 
     def reset():
         arm.setAngles(initialAngles)
@@ -335,7 +391,8 @@ def openCustomGui():
     resetButton = tkinter.Button(canvas, text="Reset", command=reset)
     button1 = tkinter.Button(canvas, text="Gradient Descent", command=doGradient)
     button2 = tkinter.Button(canvas, text="CMA-ES", command=doPcma)
-    button3 = tkinter.Button(canvas, text="GMM-ES", command=doIcma)
+    button3 = tkinter.Button(canvas, text="GMM-ES", command=doGcma)
+
     canvas.create_window(300, 550, window=button1)
     canvas.create_window(400, 550, window=button2)
     canvas.create_window(500, 550, window=button3)

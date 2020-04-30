@@ -9,7 +9,7 @@ from math import log, exp
 import sklearn.mixture as skmix # for GMM
 
 
-def fmin(objective_fct, xstart, sigma,
+def fmin(objective_fct, xstart, sigma, count=3,
          args=(),
          maxfevals='1e3 * N**2', ftarget=None,
          verb_disp=100, verb_log=1, verb_save=1000):
@@ -94,7 +94,7 @@ def fmin(objective_fct, xstart, sigma,
     :See: `CMAES`, `OOOptimizer`.
     """
     #es = CMAES(xstart, sigma, maxfevals=maxfevals, ftarget=ftarget)
-    es = GMM_CMAES(xstart, sigma, maxfevals=maxfevals, ftarget=ftarget) # substitute single gaussian for multiple
+    es = GMM_CMAES(xstart, sigma, count=count, maxfevals=maxfevals, ftarget=ftarget) # substitute single gaussian for multiple
     if verb_log:  # prepare data logging
         es.logger = pcma.CMAESDataLogger(verb_log).add(es, force=True)
     while not es.stop():
@@ -127,7 +127,7 @@ def fmin(objective_fct, xstart, sigma,
 # the gaussian used is substituted by a multiple gaussian model
 class GMM_CMAES(pcma.CMAES):
     
-    def __init__(self, xstart, sigma,  # mandatory
+    def __init__(self, xstart, sigma, count,  # mandatory
                  popsize=pcma.CMAESParameters.default_popsize,
                  ftarget=None,
                  maxfevals='100 * popsize + '  # 100 iterations plus...
@@ -135,8 +135,11 @@ class GMM_CMAES(pcma.CMAES):
 
         pcma.CMAES.__init__(self, xstart, sigma, popsize, ftarget, maxfevals)
 
-        self.mixture = skmix.GaussianMixture(3)
+        self.mixture = skmix.GaussianMixture(count)
         self.mixture.fit(pcma.CMAES.ask(self))
+        self.gaussCount = count
+        self.lastF = 0
+        self.mu = self.params.mu
     
     def ask(self):
         samples, _ = self.mixture.sample(self.params.lam)
@@ -168,19 +171,30 @@ class GMM_CMAES(pcma.CMAES):
         self.fitvals = sorted(fitvals)  # used for termination and display only
         self.best.update(arx[0], self.fitvals[0], self.counteval)
 
+        # Artificially expand the covariances when it's going good
+        if (self.lastF > self.fitvals[0]):
+            for covariance in self.mixture.covariances_:
+                for row in covariance:
+                    for i in range(len(row)):
+                        row[i] *= 2.5
+
+            self.mu += min(par.mu*2, self.mu + 1)
+        else:
+            self.mu = max(par.mu, self.mu - 1)
+
+        self.lastF = self.fitvals[0]
+
         ### recombination, compute new mixture
         self.mixture.fit(arx[0:par.mu]) # currently unweighted
         
-        print(self.best.f)
-        """
         ### recombination, compute new weighted mean value
-        self.xmean = dot(arx[0:par.mu], par.weights[0:par.mu], transpose=True)
+        self.xmean = self.mixture.means_[0]
         #          = [sum(self.weights[k] * arx[k][i] for k in range(self.mu))
         #                                             for i in range(N)]
 
         ### Cumulation: update evolution paths
-        y = minus(self.xmean, xold)
-        z = dot(self.C.invsqrt, y)  # == C**(-1/2) * (xnew - xold)
+        y = pcma.minus(self.xmean, xold)
+        z = pcma.dot(self.C.invsqrt, y)  # == C**(-1/2) * (xnew - xold)
         csn = (par.cs * (2 - par.cs) * par.mueff)**0.5 / self.sigma
         for i in range(N):  # update evolution path ps
             self.ps[i] = (1 - par.cs) * self.ps[i] + csn * z[i]
@@ -199,15 +213,16 @@ class GMM_CMAES(pcma.CMAES):
         self.C.addouter(self.pc, par.c1)  # C += c1 * pc * pc^T, so-called rank-one update
         for k, wk in enumerate(par.weights):  # so-called rank-mu update
             if wk < 0:  # guaranty positive definiteness
-                wk *= N * (self.sigma / self.C.mahalanobis_norm(minus(arx[k], xold)))**2
-            self.C.addouter(minus(arx[k], xold),  # C += wk * cmu * dx * dx^T
-                            wk * par.cmu / self.sigma**2)
-        """        
+                wk *= N * (self.sigma / self.C.mahalanobis_norm(pcma.minus(arx[k], xold)))**2
+            self.C.addouter(pcma.minus(arx[k], xold),  # C += wk * cmu * dx * dx^T
+                            wk * par.cmu / self.sigma**2)        
+        
 
         ### Adapt step-size sigma
         cn, sum_square_ps = par.cs / par.damps, sum(x**2 for x in self.ps)
         self.sigma *= exp(min(1, cn * (sum_square_ps / N - 1) / 2))
         # self.sigma *= exp(min(1, cn * (sum_square_ps**0.5 / par.chiN - 1)))
+        
         
         
 
